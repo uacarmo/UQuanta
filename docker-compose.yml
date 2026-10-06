@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  frontend:
+    image: quantum-frontend:latest
+    container_name: quantum_frontend
+    ports:
+      - "80:80"
+    environment:
+      # O integrador define o IP e Porta do Backend AQUI:
+      - BACKEND_URL=http://192.168.15.53:8000/api/
+    restart: always

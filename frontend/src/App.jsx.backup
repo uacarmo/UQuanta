@@ -1,0 +1,435 @@
+import { useEffect, useState } from "react";
+import Plot from "react-plotly.js";
+import TabBar from "./components/TabBar";
+
+
+function App() {
+  const [experiments, setExperiments] = useState([]);
+  const [selectedExperiment, setSelectedExperiment] = useState("");
+  const [parameters, setParameters] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [jobId, setJobId] = useState(null);
+  const [jobStatus, setJobStatus] = useState(null);
+  const [running, setRunning] = useState(false);
+  const [jobError, setJobError] = useState(null);
+  const [result, setResult] = useState(null);
+  const [activeTab, setActiveTab] = useState("experiment");
+
+  useEffect(() => {
+    fetch("http://127.0.0.1:8000/api/v1/experiments")
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error("Failed to load experiments");
+        }
+
+        return response.json();
+      })
+      .then((data) => {
+        setExperiments(data.experiments);
+
+        if (data.experiments.length > 0) {
+          setSelectedExperiment(data.experiments[0].id);
+        }
+
+        setLoading(false);
+      })
+      .catch((err) => {
+        setError(err.message);
+        setLoading(false);
+      });
+  }, []);
+
+  const selected = experiments.find(
+    (experiment) => experiment.id === selectedExperiment
+  );
+
+  useEffect(() => {
+    if (!selected) {
+      return;
+    }
+
+    const defaults = {};
+
+    Object.entries(selected.parameters).forEach(
+      ([name, parameter]) => {
+        defaults[name] = parameter.default;
+      }
+    );
+
+    setParameters(defaults);
+  }, [selected]);
+
+  function handleParameterChange(name, value) {
+    setParameters((current) => ({
+      ...current,
+      [name]: value,
+    }));
+  }
+
+  async function runExperiment() {
+    setRunning(true);
+    setJobError(null);
+    setJobId(null);
+    setJobStatus(null);
+    setResult(null);
+
+    try {
+      const response = await fetch(
+        "http://127.0.0.1:8000/api/v1/jobs",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            experiment: selectedExperiment,
+            parameters: parameters,
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail || "Failed to create job"
+        );
+      }
+
+      setJobId(data.job_id);
+      setJobStatus(data.status);
+
+      const jobFinished = await checkJobStatus(data.job_id);
+
+      if (!jobFinished) {
+        const interval = setInterval(async () => {
+          const finished = await checkJobStatus(data.job_id);
+
+          if (finished) {
+            clearInterval(interval);
+          }
+        }, 500);
+      }
+
+    } catch (err) {
+      setJobError(err.message);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function checkJobStatus(id) {
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:8000/api/v1/jobs/${id}`
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail || "Failed to get job status"
+        );
+      }
+
+      setJobStatus(data.status);
+
+      if (data.status === "completed") {
+        await fetchJobResult(id);
+        return true;
+      }
+
+      if (data.status === "failed") {
+        setJobError(data.error || "Experiment failed");
+        return true;
+      }
+
+      return false;
+
+    } catch (err) {
+      setJobError(err.message);
+      return true;
+    }
+  }
+
+  async function fetchJobResult(id) {
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:8000/api/v1/jobs/${id}/result`
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail || "Failed to get experiment result"
+        );
+      }
+
+      setResult(data);
+
+    } catch (err) {
+      setJobError(err.message);
+    }
+  }
+
+  return (
+    <div>
+      <h1>UQuantum Experiment Platform</h1>
+
+      <TabBar
+      activeTab={activeTab}
+      onTabChange={setActiveTab}
+      />
+
+      <p>
+        Experiment, Calibration and Test Platform
+      </p>
+
+      <hr />
+
+      {loading && <p>Loading experiments...</p>}
+
+      {error && <p>Error: {error}</p>}
+
+      {!loading && !error && (
+        <>
+          <h2>Experiment Selection</h2>
+
+          <select
+            value={selectedExperiment}
+            onChange={(event) =>
+              setSelectedExperiment(event.target.value)
+            }
+          >
+            {experiments.map((experiment) => (
+              <option
+                key={experiment.id}
+                value={experiment.id}
+              >
+                {experiment.name}
+              </option>
+            ))}
+          </select>
+
+          {selected && (
+            <div>
+              <h2>{selected.name}</h2>
+
+              <p>
+                Category: {selected.category}
+              </p>
+
+              <p>
+                Status: {selected.status}
+              </p>
+
+              <h3>Parameters</h3>
+
+              {Object.entries(selected.parameters).map(
+                ([name, parameter]) => (
+                  <div key={name}>
+                    <label>
+                      <strong>{name}</strong>
+                      {" "}
+
+                      <input
+                        type={
+                          parameter.type === "integer"
+                            ? "number"
+                            : "number"
+                        }
+                        step={
+                          parameter.type === "integer"
+                            ? "1"
+                            : "any"
+                        }
+                        min={parameter.minimum}
+                        value={parameters[name] ?? ""}
+                        onChange={(event) => {
+                          const value =
+                            parameter.type === "integer"
+                              ? parseInt(
+                                  event.target.value,
+                                  10
+                                )
+                              : parseFloat(
+                                  event.target.value
+                                );
+
+                          handleParameterChange(
+                            name,
+                            value
+                          );
+                        }}
+                      />
+
+                      {" "}
+                      <span>
+                        {parameter.unit}
+                      </span>
+                    </label>
+
+                    <br />
+                    <br />
+                  </div>
+                )
+              )}
+              <button
+                onClick={runExperiment}
+                disabled={running}
+              >
+                {running ? "Submitting..." : "Run Experiment"}
+              </button>
+              {jobId && (
+                <div>
+                  <h3>Job</h3>
+
+                  <p>
+                    Job ID: {jobId}
+                  </p>
+
+                  <p>
+                    Status: {jobStatus}
+                  </p>
+                </div>
+              )}
+
+              {result && (
+                <div>
+                  <h2>Experiment Result</h2>
+
+                  <p>
+                    Experiment: {result.experiment}
+                  </p>
+
+                  <p>
+                    Result type: {result.result_type}
+                  </p>
+
+                  <h3>Metadata</h3>
+
+                  <ul>
+                    {Object.entries(result.metadata).map(
+                      ([name, value]) => (
+                        <li key={name}>
+                          <strong>{name}</strong>: {value}
+                        </li>
+                      )
+                    )}
+                  </ul>
+
+                  <h3>Spectroscopy Curve</h3>
+
+                 <Plot
+                    data={[
+                      {
+                        x: result.data.x.values,
+                        y: result.data.y.values,
+                        type: "scatter",
+                        mode: "lines",
+                        name: "Excited-state probability",
+                      },
+                    ]}
+                    layout={{
+                      title: "F01 Spectroscopy",
+
+                      xaxis: {
+                        title: `${result.data.x.name} (${result.data.x.unit})`,
+                      },
+
+                      yaxis: {
+                        title: `${result.data.y.name} (${result.data.y.unit})`,
+                        range: [0, 1],
+                      },
+
+                      hovermode: "x unified",
+
+                      shapes: [
+                        {
+                          type: "line",
+                          x0: result.metadata.resonance_frequency,
+                          x1: result.metadata.resonance_frequency,
+                          y0: 0,
+                          y1: 1,
+                          line: {
+                            dash: "dash",
+                            width: 2,
+                          },
+                        },
+                        {
+                          type: "line",
+                          x0: result.metadata.f01,
+                          x1: result.metadata.f01,
+                          y0: 0,
+                          y1: 1,
+                          line: {
+                            dash: "dot",
+                            width: 2,
+                          },
+                        },
+                      ],
+
+                      annotations: [
+                        {
+                          x: result.metadata.resonance_frequency,
+                          y: 1,
+                          text: `Resonance: ${result.metadata.resonance_frequency}`,
+                          showarrow: true,
+                          arrowhead: 2,
+                          ax: 40,
+                          ay: -40,
+                        },
+                      ],
+
+                      autosize: true,
+                    }}
+                    style={{
+                      width: "100%",
+                      height: "500px",
+                    }}
+                    useResizeHandler={true}
+                  />
+
+                  <div>
+                    <h3>Calibration Summary</h3>
+
+                    <p>
+                      <strong>Reference F01:</strong>{" "}
+                      {result.metadata.f01}
+                    </p>
+
+                    <p>
+                      <strong>Detected Resonance:</strong>{" "}
+                      {result.metadata.resonance_frequency}
+                    </p>
+
+                    <p>
+                      <strong>Maximum Probability:</strong>{" "}
+                      {result.metadata.maximum_probability}
+                    </p>
+
+                    <p>
+                      <strong>Relative Error:</strong>{" "}
+                      {result.metadata.relative_error_percent}%
+                    </p>
+                  </div>
+
+                </div>
+              )}
+
+              {jobError && (
+                <p>
+                  Error: {jobError}
+                </p>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+export default App;
